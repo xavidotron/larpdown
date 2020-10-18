@@ -1,0 +1,31 @@
+<html>
+<head>
+  <title><%= metadata.Game.name %> — <%= me.name %></title>
+  <style type="text/css">
+
+body {
+  width: 7.5in;
+  margin: 1in auto;
+  text-align: justify;
+  font-size: 15pt;
+  hyphens: auto;
+}
+p {
+  text-indent: 1.5em;  
+  margin: 0;
+}
+h1 + p, h2 + p, h3 + p {
+  text-indent: 0;
+}
+summary {
+  cursor: pointer;
+}
+    
+  </style>
+</head>
+<body>
+
+<%- contents %>
+
+</body>
+</html>

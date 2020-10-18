@@ -1,0 +1,300 @@
+#!/usr/bin/env node
+
+'use strict';
+
+const assert = require('assert').strict;
+const fs = require('fs');
+const vm = require('vm');
+
+const glob = require("glob");
+const frontMatter = require('front-matter');
+const yargs = require('yargs');
+var jsYaml = require('js-yaml')
+
+const argv = yargs
+      .option('run', {
+        alias: 'r',
+        description: 'Run to produce',
+      })
+      .help()
+      .alias('help', 'h')
+      .argv;
+
+function onameFromPath(p) {
+  return /(?:.*[/])*([^/]+)\.md/.exec(p)[1]
+}
+
+class GameObject {
+  constructor (attrs) {
+    Object.assign(this, attrs);
+  }
+
+  gendered(f, m, o) {
+    switch (gender(this)) {
+    case 'f':
+      return f;
+    case 'm':
+      return m;
+    default:
+      return o;
+    }
+  }
+  verb(singular_they, nonthey) {
+    if (pronouns(this) == 'they/them') {
+      return singular_they;
+    } else {
+      return nonthey;
+    }
+  }
+
+  get male() {
+    return gender(this) == 'm';
+  }
+}
+function addGendered(n, f, m, o) {
+  if (!o) {
+    o = n;
+  }
+  Object.defineProperty(GameObject.prototype, n, {
+      get: function () { return this.gendered(f, m, o); }
+  });
+  Object.defineProperty(GameObject.prototype, capitalize(n), {
+    get: function () { return capitalize(this.gendered(f, m, o)); }
+  });
+}
+function addVerb(name, nonthey) {
+  Object.defineProperty(GameObject.prototype, name, {
+    get: function () { return this.verb(name, nonthey); }
+  });
+  Object.defineProperty(GameObject.prototype, capitalize(name), {
+    get: function () { return capitalize(this.verb(name, nonthey)); }
+  });
+}
+function addPronoun(pncase) {
+  const key = pncase.replace("'", "");
+  Object.defineProperty(GameObject.prototype, key, {
+    get: function () { return PRONOUNS[pronouns(this)][pncase]; }
+  });
+  Object.defineProperty(GameObject.prototype, capitalize(key), {
+    get: function () { return capitalize(PRONOUNS[pronouns(this)][pncase]); }
+  });
+}
+addGendered('prinxe', 'princess', 'prince')
+addGendered('kid', 'girl', 'boy')
+addGendered('child', 'daughter', 'son')
+addVerb('were', 'was')
+addPronoun('they');
+addPronoun('them');
+addPronoun('their');
+addPronoun('theirs');
+addPronoun("they're");
+
+const metadata = {};
+{
+  const paths = glob.sync("**/*.md");
+
+  for (let i = 0; i < paths.length; ++i) {
+    if (/(?:bin|Runs)\//.exec(paths[i])) continue;
+    const contents = fs.readFileSync(paths[i], {encoding: 'utf-8'});
+    const oname = onameFromPath(paths[i]);
+    const md = new GameObject(frontMatter(contents).attributes);
+    if (!md.name) {
+      md.name = oname;
+    }
+    metadata[oname] = md;
+  }
+
+  const ypaths = glob.sync("Defs/*.yaml");
+  for (let i = 0; i < ypaths.length; ++i) {
+    const contents = fs.readFileSync(ypaths[i], {encoding: 'utf-8'});
+    const oname = /(?:.*[/])*([^/]+)\.yaml/.exec(ypaths[i])[1];
+    const meta = jsYaml.safeLoad(contents);
+    metadata[oname] = meta;
+  }
+
+  if (argv.run) {
+    const runpaths = glob.sync("Runs/" + argv.run + "/*.yaml")
+    for (let i = 0; i < runpaths.length; ++i) {
+      const contents = fs.readFileSync(runpaths[i], {encoding: 'utf-8'});
+      const oname = /(?:.*[/])*([^/]+)\.yaml/.exec(runpaths[i])[1];
+      const meta = jsYaml.safeLoad(contents);
+      for (let k in meta) {
+	metadata[oname][k] = meta[k];
+      }
+    }
+  }
+}
+
+function gender(o) {
+  if (o.gender) {
+    return o.gender;
+  } else if (o.pronouns) {
+    const pn = o.pronouns.split('/')[0];
+    switch (pn) {
+    case 'she':
+      return 'f';
+    case 'he':
+      return 'm';
+    default:
+      return 'o';
+    }
+  } else {
+    return 'a';
+  }
+}
+
+class Pronoun {
+  constructor(they, them, their, theirs, theyre) {
+    this.they = they;
+    this.them = them;
+    this.their = their;
+    this.theirs = theirs;
+    this["they're"] = theyre;
+  }
+}
+const PRONOUNS = {
+  "she/her": new Pronoun("she", "her", "her", "hers", "she's"),
+  "he/him": new Pronoun("he", "him", "his", "his", "he's"),
+  "they/them": new Pronoun("they", "them", "their", "theirs", "they're"),
+  "ey/em": new Pronoun("ey", "em", "eir", "eirs", "ey's"),
+}
+function pronouns(o) {
+  if (o.pronouns) {
+    return o.pronouns;
+  } else {
+    switch (o.gender) {
+    case 'f':
+      return 'she/her';
+    case 'm':
+      return 'he/him';
+    case 'n':
+      return 'it/it';
+    default:
+      return 'they/them';
+    }
+  }
+}
+
+function capitalize(s) {
+  return s[0].toUpperCase() + s.slice(1);
+}
+
+function makeContext() {
+  const ctx = {
+    me: metadata.HeirGirl,
+    current: metadata.HeirGirl,
+
+    regarding: function(o) { context.current = o; return ""; }
+  };
+
+  for (let k in metadata) {
+    ctx[k] = metadata[k];
+  }
+  return ctx;
+}
+
+let context = makeContext();
+
+function substituteEval(str) {
+  const ctx = {};
+  Object.assign(ctx, context);
+  const result = vm.runInContext('with (current) {' + str + '}',
+				 vm.createContext(ctx));
+
+  if (result.call) {
+    return result();
+  } else if (result.name) {
+    return result.name;
+  } else {
+    return result;
+  }
+}
+function substituteRecursively(o) {
+  if (typeof o === 'string') {
+    return o.replace(/\$\{(.*)\}/g, function(match, g1) {
+      return substituteEval(g1);
+    });
+  } else if (o instanceof Array) {
+    return o.map(substituteRecursively);
+  } else {
+    for (let k in o) {
+      o[k] = substituteRecursively(o[k]);
+    }
+    return o;
+  }
+}
+
+for (let k in metadata) {
+  for (let a in metadata[k]) {
+    metadata[k][a] = substituteRecursively(metadata[k][a]);
+  }
+}
+
+console.warn(metadata);
+
+// Remake the context now that we've done a layer of metadata substitution.
+context = makeContext();
+
+const markdown_it = require("markdown-it");
+const markdown_it_collapsible = require("markdown-it-collapsible");
+const iterator = require('markdown-it-for-inline');
+const md = markdown_it({
+  typographer: true,
+});
+md.use(markdown_it_collapsible);
+md.use(iterator, 'sheet_links', 'link_open', function (tokens, idx) {
+  const aIndex = tokens[idx].attrIndex('href');
+  if (tokens[idx].attrs[aIndex][1].indexOf('/') == -1) {
+    assert(tokens[idx].attrs[aIndex][1] in metadata,
+	   'Object ' + tokens[idx].attrs[aIndex][1] + ' not found!');
+    tokens[idx].attrs[aIndex][1]
+      = metadata[tokens[idx].attrs[aIndex][1]].name;
+  }
+});
+md.inline.ruler.before('backticks', 'var_substitute', function (state, silent) {
+  const start = state.pos;
+  const max = state.posMax;
+
+  if (start + 3 > max) {
+    return false;
+  }
+  if (state.src.charAt(start) !== '$' || state.src.charAt(start + 1) !== '{') {
+    return false;
+  }
+
+  let end;
+  for (end = start + 2; end < max; ++end) {
+    if (state.src.charAt(end) === '}') {
+      break;
+    }
+  }
+  if (end >= max) { return false; }
+
+  if (!silent) {
+    const token = state.push('text', '', 0);
+    token.content = substituteEval(state.src.slice(start + 2, end));
+  }
+  state.pos = end + 1;
+  return true;
+})
+
+const source = frontMatter(
+  fs.readFileSync(argv._[0], {encoding: 'utf-8'})).body;
+const meta = metadata[onameFromPath(argv._[0])];
+let title = '# ' + meta.name;
+if ('gender' in meta || 'pronouns' in meta) {
+  title += ' (' + pronouns(meta) + ')';
+}
+const markdown = title + '\n\n' + source;
+
+const ejs = require('ejs');
+
+ejs.renderFile('templates/sheet.ejs', {
+  me: meta,
+  metadata: metadata,
+  contents: md.render(markdown),
+}, {}, function (err, str) {
+  if (err) { console.error(err); return; }
+
+  console.log(str);
+});
